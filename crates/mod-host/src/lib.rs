@@ -112,7 +112,11 @@ fn on_attach(request: AttachRequest) -> AttachResult {
 
         let override_mapping = Arc::new(override_mapping);
 
-        filesystem::attach_override(override_mapping.clone())?;
+if std::env::var("ME3_DIAG_SKIP_FILESYSTEM_HOOKS").as_deref() == Ok("1") {
+    info!("DIAG: filesystem hooks skipped");
+} else {
+    filesystem::attach_override(override_mapping.clone())?;
+}
 
         info!("Host successfully attached");
 
@@ -179,12 +183,16 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
         alloc_hooks::hook_heap_allocators(&attach_config, exe, &class_map)?;
     }
 
+if std::env::var("ME3_DIAG_SKIP_OVERSIZED_REGULATION_FIX").as_deref() == Ok("1") {
+    info!("DIAG: oversized regulation fix skipped");
+} else {
     savefile::oversized_regulation_fix(
         attach_config.clone(),
         exe,
         &step_tables,
         override_mapping.clone(),
     )?;
+}
 
     let first_delayed_offset = attach_config
         .natives
