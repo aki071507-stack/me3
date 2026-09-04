@@ -44,6 +44,7 @@ pub struct ModHost {
     profiles: Vec<ModProfile>,
     property_overrides: Mutex<PropertyOverrides>,
     pub disable_arxan: bool,
+    pub no_steam: bool,
 }
 
 impl Debug for ModHost {
@@ -52,6 +53,7 @@ impl Debug for ModHost {
             .field("hooks", &self.hooks)
             .field("profiles", &self.profiles)
             .field("property_overrides", &self.property_overrides)
+            .field("no_steam", &self.no_steam)
             .finish()
     }
 }
@@ -74,6 +76,7 @@ impl ModHost {
 
         Ok(Self {
             disable_arxan,
+            no_steam: attach_config.no_steam,
             property_overrides: Mutex::new(property_overrides),
             ..Default::default()
         })

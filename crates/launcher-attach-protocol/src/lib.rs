@@ -70,6 +70,11 @@ pub struct AttachConfig {
     /// Should we avoid checking if Steam is running as part of pre-launch checks?
     pub skip_steam_init: bool,
 
+    /// Disable all Steam-dependent integration added by me3.
+    ///
+    /// This does not modify or emulate the game's own Steamworks behavior.
+    pub no_steam: bool,
+
     /// Game properties to override.
     pub property_overrides: IndexMap<String, String>,
 }

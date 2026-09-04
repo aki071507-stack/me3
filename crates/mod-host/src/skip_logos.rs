@@ -19,7 +19,7 @@ use windows::{
 };
 
 use crate::{
-    deferred::{defer_init, Deferred},
+    deferred::{advance_after_main, defer_init, Deferred},
     executable::Executable,
     host::ModHost,
 };
@@ -29,7 +29,7 @@ pub fn attach_override(
     attach_config: Arc<AttachConfig>,
     exe: Executable,
 ) -> Result<(), eyre::Error> {
-    fix_show_window_flash()?;
+    fix_show_window_flash(attach_config.no_steam)?;
 
     defer_init(Span::current(), Deferred::AfterMain, move || {
         if attach_config.skip_logos {
@@ -147,7 +147,7 @@ fn skip_sprj_logos(exe: Executable) -> Result<(), eyre::Error> {
 }
 
 /// Replaces the default WNDCLASSEXW white background color with black.
-fn fix_show_window_flash() -> Result<(), eyre::Error> {
+fn fix_show_window_flash(no_steam: bool) -> Result<(), eyre::Error> {
     unsafe {
         let user32 = GetModuleHandleW(w!("user32.dll"))?;
 
@@ -159,14 +159,25 @@ fn fix_show_window_flash() -> Result<(), eyre::Error> {
                 _,
                 unsafe extern "C" fn(*const WNDCLASSEXW) -> u16,
             >(register_class))
-            .with_closure(|class, trampoline| {
-                if !class.is_null() {
+            .with_closure(move |class, trampoline| {
+                let result = if no_steam {
+                    // Preserve the game's original window class unchanged.
+                    trampoline(class)
+                } else if !class.is_null() {
                     let mut class = class.read();
                     class.hbrBackground = CreateSolidBrush(COLORREF(0));
                     trampoline(&class)
                 } else {
                     trampoline(class)
+                };
+
+                if no_steam && result != 0 && advance_after_main() {
+                    info!(
+                        "No-Steam lifecycle trigger: RegisterClassExW completed; advancing AfterMain"
+                    );
                 }
+
+                result
             })
             .install()?;
 

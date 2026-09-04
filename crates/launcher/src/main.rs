@@ -35,7 +35,9 @@ fn run(
         args.exe, args.host_dll
     );
 
-    if !config.skip_steam_init {
+    if config.no_steam {
+        warn!("No-Steam mode: skipping ME3 Steam initialization");
+    } else if !config.skip_steam_init {
         require_steam(&args.exe)?;
     } else {
         warn!("skipping Steam initialization, no guarantee Steam game will launch successfully");

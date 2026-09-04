@@ -44,10 +44,17 @@ where
             &BEFORE_MAIN
         }
         Deferred::AfterMain => {
-            static HOOKED_STEAM_INIT: LazyLock<Result<(), eyre::Error>> =
-                LazyLock::new(hook_steam_init);
+            if ModHost::get_attached().no_steam {
+                static LOGGED_NO_STEAM: Once = Once::new();
+                LOGGED_NO_STEAM.call_once(|| {
+                    info!("No-Steam mode: SteamAPI_Init AfterMain hook disabled");
+                });
+            } else {
+                static HOOKED_STEAM_INIT: LazyLock<Result<(), eyre::Error>> =
+                    LazyLock::new(hook_steam_init);
 
-            HOOKED_STEAM_INIT.as_ref().map_err(|e| eyre!(e))?;
+                HOOKED_STEAM_INIT.as_ref().map_err(|e| eyre!(e))?;
+            }
 
             &AFTER_MAIN
         }
@@ -77,6 +84,15 @@ where
         .ok_or_eyre("tried to defer function after init")
 }
 
+pub fn advance_after_main() -> bool {
+    let Some(deferred) = AFTER_MAIN.lock().unwrap().take() else {
+        return false;
+    };
+
+    deferred.into_iter().for_each(|f| f());
+    true
+}
+
 #[instrument]
 fn hook_steam_init() -> Result<(), eyre::Error> {
     ModHost::get_attached()
@@ -84,8 +100,8 @@ fn hook_steam_init() -> Result<(), eyre::Error> {
         .with_closure(|trampoline| {
             let result = unsafe { trampoline() };
 
-            if result && let Some(deferred) = AFTER_MAIN.lock().unwrap().take() {
-                deferred.into_iter().for_each(|f| f());
+            if result {
+                let _ = advance_after_main();
             }
 
             result

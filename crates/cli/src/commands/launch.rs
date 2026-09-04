@@ -103,6 +103,12 @@ pub struct GameOptions {
     #[clap(long("skip-steam-init"), default_missing_value = "true", num_args=0..=1)]
     pub(crate) skip_steam_init: Option<bool>,
 
+    /// Disable Steam-dependent integration added by me3?
+    ///
+    /// Requires a custom executable path via --exe.
+    #[clap(long("no-steam"), default_missing_value = "true", num_args=0..=1)]
+    pub(crate) no_steam: Option<bool>,
+
     /// Custom path to the game executable.
     #[clap(short('e'), long, help_heading = "Game selection", value_hint = clap::ValueHint::FilePath)]
     pub(crate) exe: Option<PathBuf>,
@@ -118,6 +124,7 @@ impl GameOptions {
             boot_boost: other.boot_boost.or(self.boot_boost),
             skip_logos: other.skip_logos.or(self.skip_logos),
             skip_steam_init: other.skip_steam_init.or(self.skip_steam_init),
+            no_steam: other.no_steam.or(self.no_steam),
             exe: other.exe.or(self.exe),
         }
     }
@@ -225,6 +232,18 @@ impl LaunchArgs {
             .unwrap_or_default()
             .merge(self.game_options.clone());
 
+        let no_steam = game_options.no_steam.unwrap_or(false);
+
+        if no_steam && game_options.exe.is_none() {
+            return Err(eyre!(
+                "--no-steam requires a custom executable path via --exe"
+            ));
+        }
+
+        if no_steam && !cfg!(target_os = "windows") {
+            return Err(eyre!("--no-steam is currently supported on Windows only"));
+        }
+
         let profile_options = profile.options().merge(self.profile_options.clone());
 
         info!(?game, ?game_options, ?profile_options, "resolved game");
@@ -317,7 +336,9 @@ impl LaunchArgs {
             disable_arxan: profile_options.disable_arxan.unwrap_or(false),
             mem_patch: !profile_options.no_mem_patch.unwrap_or(false),
             mem_patch_heap_size: profile_options.heap_size,
-            skip_steam_init: opts.skip_steam_init.unwrap_or(false),
+            skip_steam_init: opts.skip_steam_init.unwrap_or(false)
+                || opts.no_steam.unwrap_or(false),
+            no_steam: opts.no_steam.unwrap_or(false),
             property_overrides,
         })
     }
@@ -509,12 +530,23 @@ pub fn launch(
         .with_env_vars(game.into_vars())
         .with_env_vars(launcher_vars)
         .with_env_vars(telemetry_vars)
-        .env("SteamAppId", app_id.to_string())
-        .env("SteamGameId", app_id.to_string())
-        .env("SteamOverlayGameId", app_id.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
+    if attach_config.no_steam {
+        info!("No-Steam mode: removing ME3 Steam App ID environment variables");
+
+        injector_command
+            .env_remove("SteamAppId")
+            .env_remove("SteamGameId")
+            .env_remove("SteamOverlayGameId");
+    } else {
+        injector_command
+            .env("SteamAppId", app_id.to_string())
+            .env("SteamGameId", app_id.to_string())
+            .env("SteamOverlayGameId", app_id.to_string());
+    }
 
     info!(?injector_command, "running injector command");
     // Set terminal window title. See console_codes(4)
@@ -598,6 +630,7 @@ mod tests {
                 boot_boost: None,
                 skip_logos: None,
                 skip_steam_init: None,
+                no_steam: None,
                 exe: None,
             },
         );
@@ -625,6 +658,7 @@ mod tests {
             "--show-logos",
             "--disable-arxan",
             "--skip-steam-init",
+            "--no-steam",
             "--online",
             "--no-mem-patch",
         ]);
@@ -639,6 +673,7 @@ mod tests {
                 boot_boost: Some(false),
                 skip_logos: Some(false),
                 skip_steam_init: Some(true),
+                no_steam: Some(true),
                 exe: None,
             },
         );
@@ -666,6 +701,7 @@ mod tests {
             "--show-logos=false",
             "--disable-arxan=false",
             "--skip-steam-init=false",
+            "--no-steam=false",
             "--online=false",
             "--no-mem-patch=false",
         ]);
@@ -680,6 +716,7 @@ mod tests {
                 boot_boost: Some(true),
                 skip_logos: Some(true),
                 skip_steam_init: Some(false),
+                no_steam: Some(false),
                 exe: None,
             },
         );
@@ -707,6 +744,7 @@ mod tests {
             "--show-logos=true",
             "--disable-arxan=true",
             "--skip-steam-init=true",
+            "--no-steam=true",
             "--online=true",
             "--no-mem-patch=true",
         ]);
@@ -721,6 +759,7 @@ mod tests {
                 boot_boost: Some(false),
                 skip_logos: Some(false),
                 skip_steam_init: Some(true),
+                no_steam: Some(true),
                 exe: None,
             },
         );
