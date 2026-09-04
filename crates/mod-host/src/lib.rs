@@ -227,6 +227,9 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
         }
     });
 
+if std::env::var("ME3_DIAG_SKIP_ASSET_HOOKS").as_deref() == Ok("1") {
+    info!("DIAG: asset override hooks skipped");
+} else {
     asset_hooks::attach_override(
         attach_config,
         exe,
@@ -237,6 +240,7 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
     .map_err(|e| {
         e.wrap_err("failed to attach asset override hooks; no files will be overridden")
     })?;
+}
 
     Ok(())
 }
