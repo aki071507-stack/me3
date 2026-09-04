@@ -51,6 +51,12 @@ fn me_attach(request: AttachRequest) -> AttachResult {
         debugger::suspend_for_debugger();
     }
 
+    if request.config.no_steam
+        && std::env::var("ME3_NO_STEAM_DIAG_STAGE").as_deref() == Ok("dll-only")
+    {
+        return Ok(Attachment);
+    }
+
     on_attach(request)
 }
 
@@ -101,6 +107,45 @@ fn on_attach(request: AttachRequest) -> AttachResult {
         }
 
         ModHost::new(&attach_config)?.attach();
+
+        let no_steam_diag_stage = if attach_config.no_steam {
+            std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        match no_steam_diag_stage.as_str() {
+            "host-only" => {
+                info!(
+                    "No-Steam diagnostic stage=host-only: skipping dearxan, UI, filesystem, and deferred hooks"
+                );
+                return Ok(Attachment);
+            }
+            "dearxan-only" => {
+                info!("No-Steam diagnostic stage=dearxan-only");
+                dearxan(&attach_config)?;
+                return Ok(Attachment);
+            }
+            "filesystem-only" => {
+                info!("No-Steam diagnostic stage=filesystem-only");
+
+                let mut override_mapping = VfsOverrideMapping::new()?;
+                override_mapping.scan_directories(attach_config.packages.iter())?;
+                savefile::attach_override(&attach_config, &mut override_mapping)?;
+
+                let override_mapping = Arc::new(override_mapping);
+                filesystem::attach_override(override_mapping)?;
+
+                return Ok(Attachment);
+            }
+            "" | "full" => {}
+            other => {
+                warn!(
+                    stage = other,
+                    "unknown ME3_NO_STEAM_DIAG_STAGE; proceeding with full no-Steam attach"
+                );
+            }
+        }
 
         dearxan(&attach_config)?;
 
