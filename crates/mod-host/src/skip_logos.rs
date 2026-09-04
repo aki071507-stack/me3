@@ -29,7 +29,11 @@ pub fn attach_override(
     attach_config: Arc<AttachConfig>,
     exe: Executable,
 ) -> Result<(), eyre::Error> {
-    fix_show_window_flash(attach_config.no_steam)?;
+    if attach_config.no_steam {
+        info!("No-Steam diagnostic: RegisterClassExW hook skipped");
+    } else {
+        fix_show_window_flash(false)?;
+    }
 
     defer_init(Span::current(), Deferred::AfterMain, move || {
         if attach_config.skip_logos {
