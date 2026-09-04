@@ -345,7 +345,9 @@ pub extern "system" fn DllMain(instance: usize, reason: u32, _: *mut usize) -> i
 
             let _ = INSTANCE.set(instance);
 
-            spawn_msg_thread();
+            if std::env::var("ME3_NO_STEAM_DIAG_STAGE").as_deref() != Ok("load-only") {
+                spawn_msg_thread();
+            }
         }
         DLL_PROCESS_DETACH => {
             #[cfg(coverage)]

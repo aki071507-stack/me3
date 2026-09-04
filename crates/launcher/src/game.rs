@@ -98,7 +98,33 @@ impl Game {
         let thread_handle = self.child.main_thread_handle();
         let process_handle = self.child.as_handle().try_clone_to_owned()?;
 
+        let no_steam_diag_stage = if attach_request.config.no_steam {
+            std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        if no_steam_diag_stage == "resume-only" {
+            unsafe {
+                ResumeThread(HANDLE(thread_handle.as_raw_handle()));
+            }
+
+            info!("No-Steam diagnostic stage=resume-only: resumed without DLL injection");
+            return Ok(Attachment);
+        }
+
         inject_dll(&process_handle, dll_path).wrap_err("failed to inject mod host DLL")?;
+
+        if no_steam_diag_stage == "load-only" {
+            unsafe {
+                ResumeThread(HANDLE(thread_handle.as_raw_handle()));
+            }
+
+            info!(
+                "No-Steam diagnostic stage=load-only: DLL loaded, attach request skipped, process resumed"
+            );
+            return Ok(Attachment);
+        }
 
         if attach_request.config.suspend {
             info!("Process will be suspended until a debugger is attached...");
