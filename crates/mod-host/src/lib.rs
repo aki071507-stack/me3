@@ -345,7 +345,10 @@ pub extern "system" fn DllMain(instance: usize, reason: u32, _: *mut usize) -> i
 
             let _ = INSTANCE.set(instance);
 
-            if std::env::var("ME3_NO_STEAM_DIAG_STAGE").as_deref() != Ok("load-only") {
+            let no_steam_diag_stage =
+                std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
+
+            if no_steam_diag_stage != "load-only" && no_steam_diag_stage != "late-load-only" {
                 spawn_msg_thread();
             }
         }

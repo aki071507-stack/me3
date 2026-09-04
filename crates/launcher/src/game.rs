@@ -27,7 +27,8 @@ use windows::{
             LibraryLoader::{GetModuleHandleW, GetProcAddress},
             Memory::{VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE},
             Threading::{
-                CreateRemoteThread, ResumeThread, WaitForSingleObject, CREATE_SUSPENDED, INFINITE,
+                CreateRemoteThread, GetExitCodeThread, ResumeThread, WaitForSingleObject,
+                CREATE_SUSPENDED, INFINITE,
             },
         },
     },
@@ -113,7 +114,63 @@ impl Game {
             return Ok(Attachment);
         }
 
-        inject_dll(&process_handle, dll_path).wrap_err("failed to inject mod host DLL")?;
+        let missing_probe_path = Path::new(r"C:\__ME3_NO_STEAM_DIAG_MISSING__.dll");
+
+        if no_steam_diag_stage == "probe-only" {
+            let load_result = inject_dll(&process_handle, missing_probe_path)
+                .wrap_err("failed to execute missing-DLL remote-thread probe")?;
+
+            info!(
+                load_result,
+                "No-Steam diagnostic stage=probe-only: remote LoadLibraryW missing-DLL probe completed"
+            );
+
+            unsafe {
+                ResumeThread(HANDLE(thread_handle.as_raw_handle()));
+            }
+
+            return Ok(Attachment);
+        }
+
+        if no_steam_diag_stage == "late-probe-only"
+            || no_steam_diag_stage == "late-load-only"
+        {
+            unsafe {
+                ResumeThread(HANDLE(thread_handle.as_raw_handle()));
+            }
+
+            info!(
+                stage = no_steam_diag_stage,
+                "No-Steam diagnostic: process resumed before delayed injection probe"
+            );
+
+            std::thread::sleep(std::time::Duration::from_secs(8));
+
+            let target_path = if no_steam_diag_stage == "late-probe-only" {
+                missing_probe_path
+            } else {
+                dll_path
+            };
+
+            let load_result = inject_dll(&process_handle, target_path)
+                .wrap_err("failed delayed remote LoadLibraryW probe")?;
+
+            info!(
+                stage = no_steam_diag_stage,
+                load_result,
+                "No-Steam diagnostic: delayed remote LoadLibraryW probe completed"
+            );
+
+            return Ok(Attachment);
+        }
+
+        let load_result =
+            inject_dll(&process_handle, dll_path).wrap_err("failed to inject mod host DLL")?;
+
+        info!(
+            load_result,
+            "No-Steam diagnostic: remote LoadLibraryW for mod host completed"
+        );
 
         if no_steam_diag_stage == "load-only" {
             unsafe {
@@ -121,7 +178,7 @@ impl Game {
             }
 
             info!(
-                "No-Steam diagnostic stage=load-only: DLL loaded, attach request skipped, process resumed"
+                "No-Steam diagnostic stage=load-only: DLL load attempted, attach request skipped, process resumed"
             );
             return Ok(Attachment);
         }
@@ -176,7 +233,7 @@ impl Game {
     }
 }
 
-fn inject_dll(process: &OwnedHandle, path: &Path) -> LauncherResult<()> {
+fn inject_dll(process: &OwnedHandle, path: &Path) -> LauncherResult<u32> {
     let path = path
         .as_os_str()
         .encode_wide()
@@ -219,8 +276,11 @@ fn inject_dll(process: &OwnedHandle, path: &Path) -> LauncherResult<()> {
             return Err(WinError::from_thread().into());
         }
 
-        CloseHandle(thread)?;
-    }
+        let mut load_result = 0u32;
+        GetExitCodeThread(thread, &mut load_result)?;
 
-    Ok(())
+        CloseHandle(thread)?;
+
+        Ok(load_result)
+    }
 }
