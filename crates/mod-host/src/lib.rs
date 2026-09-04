@@ -102,7 +102,16 @@ fn on_attach(request: AttachRequest) -> AttachResult {
 
         ModHost::new(&attach_config)?.attach();
 
-        dearxan(&attach_config)?;
+ModHost::new(&attach_config)?.attach();
+
+dearxan(&attach_config)?;
+
+if std::env::var("ME3_DIAG_MINIMAL_AFTER_DEARXAN").as_deref() == Ok("1") {
+    info!("DIAG: minimal attach after dearxan");
+    return Ok(Attachment);
+}
+
+skip_logos::attach_override(attach_config.clone(), exe)?;
 
         skip_logos::attach_override(attach_config.clone(), exe)?;
 
