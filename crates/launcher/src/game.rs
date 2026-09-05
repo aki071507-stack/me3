@@ -164,7 +164,18 @@ impl Game {
                 "No-Steam: process resumed before delayed injection"
             );
 
-            std::thread::sleep(std::time::Duration::from_secs(8));
+            let delay_ms = std::env::var("ME3_NO_STEAM_ATTACH_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(8_000);
+
+            info!(
+                stage = stage_name,
+                delay_ms,
+                "No-Steam: waiting before delayed injection"
+            );
+
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
 
             let target_path = if no_steam_diag_stage == "late-probe-only" {
                 missing_probe_path
