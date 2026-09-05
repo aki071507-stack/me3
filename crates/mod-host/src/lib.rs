@@ -244,6 +244,50 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
         override_mapping.clone(),
     )?;
 
+    // No-Steam late attach has two independently observed timing requirements:
+    // package/asset hooks must be installed early, while normal native DLLs may
+    // require a later game/graphics-ready point. Install asset hooks first and
+    // keep them active while waiting to load normal natives.
+    if attach_config.no_steam {
+        asset_hooks::attach_override(
+            attach_config.clone(),
+            exe,
+            class_map.clone(),
+            &step_tables,
+            override_mapping.clone(),
+        )
+        .map_err(|e| {
+            e.wrap_err("failed to attach asset override hooks; no files will be overridden")
+        })?;
+
+        if !attach_config.natives.is_empty() {
+            let attach_delay_ms = std::env::var("ME3_NO_STEAM_ATTACH_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1_000);
+
+            let native_ready_ms = std::env::var("ME3_NO_STEAM_NATIVE_READY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(8_000);
+
+            let wait_ms = native_ready_ms.saturating_sub(attach_delay_ms);
+
+            info!(
+                attach_delay_ms,
+                native_ready_ms,
+                wait_ms,
+                "No-Steam: asset hooks active; waiting before loading normal native mods"
+            );
+
+            if wait_ms != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+            }
+
+            info!("No-Steam: native readiness delay elapsed; loading normal native mods");
+        }
+    }
+
     let first_delayed_offset = attach_config
         .natives
         .iter()
@@ -285,16 +329,18 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
         }
     });
 
-    asset_hooks::attach_override(
-        attach_config,
-        exe,
-        class_map,
-        &step_tables,
-        override_mapping,
-    )
-    .map_err(|e| {
-        e.wrap_err("failed to attach asset override hooks; no files will be overridden")
-    })?;
+    if !attach_config.no_steam {
+        asset_hooks::attach_override(
+            attach_config,
+            exe,
+            class_map,
+            &step_tables,
+            override_mapping,
+        )
+        .map_err(|e| {
+            e.wrap_err("failed to attach asset override hooks; no files will be overridden")
+        })?;
+    }
 
     Ok(())
 }
