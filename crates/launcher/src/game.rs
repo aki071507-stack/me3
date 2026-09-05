@@ -132,26 +132,36 @@ impl Game {
             return Ok(Attachment);
         }
 
-        let delayed_stage = matches!(
-            no_steam_diag_stage.as_str(),
-            "late-probe-only"
-                | "late-load-only"
-                | "late-dll-only"
-                | "late-host-only"
-                | "late-dearxan-only"
-                | "late-filesystem-only"
-                | "late-full"
-                | "late-full-immediate"
-        );
+        let production_no_steam_late_attach =
+            attach_request.config.no_steam && no_steam_diag_stage.is_empty();
+
+        let delayed_stage = production_no_steam_late_attach
+            || matches!(
+                no_steam_diag_stage.as_str(),
+                "late-probe-only"
+                    | "late-load-only"
+                    | "late-dll-only"
+                    | "late-host-only"
+                    | "late-dearxan-only"
+                    | "late-filesystem-only"
+                    | "late-full"
+                    | "late-full-immediate"
+            );
 
         if delayed_stage {
             unsafe {
                 ResumeThread(HANDLE(thread_handle.as_raw_handle()));
             }
 
+            let stage_name = if production_no_steam_late_attach {
+                "no-steam-default"
+            } else {
+                no_steam_diag_stage.as_str()
+            };
+
             info!(
-                stage = no_steam_diag_stage,
-                "No-Steam diagnostic: process resumed before delayed injection"
+                stage = stage_name,
+                "No-Steam: process resumed before delayed injection"
             );
 
             std::thread::sleep(std::time::Duration::from_secs(8));
@@ -166,9 +176,9 @@ impl Game {
                 .wrap_err("failed delayed remote LoadLibraryW probe")?;
 
             info!(
-                stage = no_steam_diag_stage,
+                stage = stage_name,
                 load_result,
-                "No-Steam diagnostic: delayed remote LoadLibraryW probe completed"
+                "No-Steam: delayed remote LoadLibraryW completed"
             );
 
             if no_steam_diag_stage == "late-probe-only"
@@ -183,8 +193,8 @@ impl Game {
                 .map_err(|e| eyre!(e.0))?;
 
             info!(
-                stage = no_steam_diag_stage,
-                "No-Steam diagnostic: delayed host attach request completed"
+                stage = stage_name,
+                "No-Steam: delayed host attach request completed"
             );
 
             return Ok(response);

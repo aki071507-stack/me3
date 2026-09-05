@@ -36,12 +36,14 @@ pub fn defer_init<F>(span: Span, until: Deferred, f: F) -> Result<(), eyre::Erro
 where
     F: FnOnce() + Send + 'static,
 {
+    let no_steam_diag_stage =
+        std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
+
     if ModHost::get_attached().no_steam
-        && std::env::var("ME3_NO_STEAM_DIAG_STAGE").as_deref()
-            == Ok("late-full-immediate")
+        && (no_steam_diag_stage.is_empty() || no_steam_diag_stage == "late-full-immediate")
     {
         info!(
-            "No-Steam diagnostic late attach: startup defer point already passed; executing immediately"
+            "No-Steam late attach: startup defer point already passed; executing immediately"
         );
         span.in_scope(f);
         return Ok(());
