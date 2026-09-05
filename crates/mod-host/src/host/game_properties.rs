@@ -2,8 +2,10 @@ use std::{
     borrow::Cow,
     ffi::c_char,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
 };
 
 use eyre::ContextCompat;
@@ -26,6 +28,7 @@ type SetGameProperty = unsafe extern "C" fn(*const c_char, *const c_char);
 
 static SYSTEM_PROPERTIES_APPLIED: AtomicBool = AtomicBool::new(false);
 static DEBUG_PROPERTIES_APPLIED: AtomicBool = AtomicBool::new(false);
+static SET_GAME_PROPERTY: OnceLock<SetGameProperty> = OnceLock::new();
 
 pub fn start_offline() {
     ModHost::get_attached()
@@ -37,68 +40,39 @@ pub fn start_offline() {
 pub fn attach_override(
     game: Game,
     runtime_classes: &[RuntimeClassEntry<'_>],
-    no_steam: bool,
 ) -> Result<(), eyre::Error> {
-    let set_game_prop = override_debug_properties(game, runtime_classes)?;
+    override_debug_properties(game, runtime_classes)?;
     override_system_properties(game)?;
 
-    if no_steam {
-        let span = Span::current();
+    Ok(())
+}
 
-        std::thread::spawn(move || {
-            // Keep the original hooks as the primary path. The worker only catches
-            // up when late attach missed one or both one-shot property-init events.
-            // Poll a concrete singleton-readiness signal rather than assuming the
-            // host attach timestamp itself means properties are initialized.
-            const POLL_INTERVAL_MS: u64 = 25;
-            const MAX_WAIT_MS: u64 = 10_000;
-            let max_polls = MAX_WAIT_MS / POLL_INTERVAL_MS;
+/// Catch up property overrides from a game-owned startup callback.
+///
+/// The ordinary AfterSysPropsInit / AfterDbgPropsInit hooks remain the primary
+/// path. No-Steam late attach can miss those one-shot events, so FileStep calls
+/// this after its original STEP_Init trampoline returns. This avoids mutating
+/// game property structures or calling SetGameProperty from an arbitrary worker
+/// thread while the game is running.
+pub fn catch_up_no_steam_from_file_step(game: Game) -> bool {
+    let system_applied = apply_system_properties(game, "no-steam-file-step");
 
-            for _ in 0..max_polls {
-                if SYSTEM_PROPERTIES_APPLIED.load(Ordering::Acquire) {
-                    break;
-                }
-
-                if span.in_scope(|| apply_system_properties(game, "no-steam-catch-up")) {
-                    break;
-                }
-
-                std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
-            }
-
-            if !SYSTEM_PROPERTIES_APPLIED.load(Ordering::Acquire) {
-                tracing::warn!(
-                    max_wait_ms = MAX_WAIT_MS,
-                    "No-Steam property catch-up: system properties did not become ready"
-                );
-                return;
-            }
-
-            // Give the original debug-property init hook the first opportunity to
-            // fire after system properties are known to exist. If it was already
-            // missed, apply the same override set through SetGameProperty.
-            for _ in 0..40 {
-                if DEBUG_PROPERTIES_APPLIED.load(Ordering::Acquire) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
-            }
-
-            if !DEBUG_PROPERTIES_APPLIED.load(Ordering::Acquire) {
-                span.in_scope(|| {
-                    apply_debug_properties(set_game_prop, "no-steam-catch-up");
-                });
-            }
-
-            tracing::info!(
-                system_applied = SYSTEM_PROPERTIES_APPLIED.load(Ordering::Acquire),
-                debug_applied = DEBUG_PROPERTIES_APPLIED.load(Ordering::Acquire),
-                "No-Steam property catch-up complete"
-            );
-        });
+    if system_applied
+        && !DEBUG_PROPERTIES_APPLIED.load(Ordering::Acquire)
+        && let Some(set_game_prop) = SET_GAME_PROPERTY.get().copied()
+    {
+        apply_debug_properties(set_game_prop, "no-steam-file-step");
     }
 
-    Ok(())
+    let debug_applied = DEBUG_PROPERTIES_APPLIED.load(Ordering::Acquire);
+
+    tracing::info!(
+        system_applied,
+        debug_applied,
+        "No-Steam property catch-up evaluated from FileStep"
+    );
+
+    system_applied && debug_applied
 }
 
 #[instrument(skip_all)]
@@ -134,6 +108,7 @@ fn override_debug_properties(
     tracing::debug!(?set_game_prop_addr);
 
     let set_game_prop: SetGameProperty = unsafe { std::mem::transmute(set_game_prop_addr) };
+    let _ = SET_GAME_PROPERTY.set(set_game_prop);
 
     defer_init(Span::current(), Deferred::AfterDbgPropsInit, move || {
         apply_debug_properties(set_game_prop, "deferred-hook");

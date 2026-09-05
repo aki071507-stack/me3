@@ -35,7 +35,9 @@ use tracing::{debug, error, info, info_span, instrument, warn};
 use windows::core::{PCSTR, PCWSTR};
 use xxhash_rust::xxh3;
 
-use crate::{alloc_hooks::MIMALLOC_DLALLOC, executable::Executable, host::ModHost};
+use crate::{
+    alloc_hooks::MIMALLOC_DLALLOC, executable::Executable, host::game_properties, host::ModHost,
+};
 
 static VFS_MOUNTS: Mutex<VfsMounts> = Mutex::new(VfsMounts::new());
 
@@ -112,6 +114,14 @@ fn hook_file_init(
 
             unsafe {
                 trampoline(p1, p2);
+            }
+
+            if attach_config.no_steam
+                && !game_properties::catch_up_no_steam_from_file_step(attach_config.game)
+            {
+                warn!(
+                    "No-Steam property catch-up was not ready during FileStep::STEP_Init"
+                );
             }
 
             if result.is_ok()

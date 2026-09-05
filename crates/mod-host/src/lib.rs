@@ -156,7 +156,15 @@ fn on_attach(request: AttachRequest) -> AttachResult {
             }
         }
 
-        dearxan(&attach_config)?;
+        if attach_config.no_steam {
+            if attach_config.disable_arxan {
+                warn!(
+                    "No-Steam late attach: ignoring disable_arxan because Dearxan requires pre-entrypoint timing"
+                );
+            }
+        } else {
+            dearxan(&attach_config)?;
+        }
 
         skip_logos::attach_override(attach_config.clone(), exe)?;
 
@@ -236,7 +244,7 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
     if !attach_config.start_online {
         game_properties::start_offline();
     }
-    game_properties::attach_override(attach_config.game, runtime_classes, attach_config.no_steam)?;
+    game_properties::attach_override(attach_config.game, runtime_classes)?;
 
     if attach_config.mem_patch {
         alloc_hooks::hook_heap_allocators(&attach_config, exe, &class_map)?;
