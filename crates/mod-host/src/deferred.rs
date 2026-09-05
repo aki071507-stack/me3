@@ -36,6 +36,17 @@ pub fn defer_init<F>(span: Span, until: Deferred, f: F) -> Result<(), eyre::Erro
 where
     F: FnOnce() + Send + 'static,
 {
+    if ModHost::get_attached().no_steam
+        && std::env::var("ME3_NO_STEAM_DIAG_STAGE").as_deref()
+            == Ok("late-full-immediate")
+    {
+        info!(
+            "No-Steam diagnostic late attach: startup defer point already passed; executing immediately"
+        );
+        span.in_scope(f);
+        return Ok(());
+    }
+
     let deferred = match until {
         Deferred::BeforeMain => {
             static SCHEDULED_AFTER_ARXAN: Once = Once::new();

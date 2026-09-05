@@ -145,7 +145,7 @@ fn on_attach(request: AttachRequest) -> AttachResult {
 
                 return Ok(Attachment);
             }
-            "" | "full" | "late-full" => {}
+            "" | "full" | "late-full" | "late-full-immediate" => {}
             other => {
                 warn!(
                     stage = other,

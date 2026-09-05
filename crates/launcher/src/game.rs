@@ -141,6 +141,7 @@ impl Game {
                 | "late-dearxan-only"
                 | "late-filesystem-only"
                 | "late-full"
+                | "late-full-immediate"
         );
 
         if delayed_stage {
