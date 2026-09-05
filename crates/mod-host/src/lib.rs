@@ -52,8 +52,7 @@ fn me_attach(request: AttachRequest) -> AttachResult {
     }
 
     if request.config.no_steam {
-        let no_steam_diag_stage =
-            std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
+        let no_steam_diag_stage = std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
 
         if no_steam_diag_stage == "dll-only" || no_steam_diag_stage == "late-dll-only" {
             return Ok(Attachment);
@@ -126,7 +125,10 @@ fn on_attach(request: AttachRequest) -> AttachResult {
                 return Ok(Attachment);
             }
             "dearxan-only" | "late-dearxan-only" => {
-                info!(stage = no_steam_diag_stage, "No-Steam diagnostic dearxan-only");
+                info!(
+                    stage = no_steam_diag_stage,
+                    "No-Steam diagnostic dearxan-only"
+                );
                 dearxan(&attach_config)?;
                 return Ok(Attachment);
             }
@@ -228,10 +230,13 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
     let step_tables = Fd4StepTables::from_initialized_data(exe)?;
     let runtime_classes = unsafe { RuntimeClassEntry::from_analysis(dlrf::runtime_classes(exe)?) };
 
-    game_properties::attach_override(attach_config.game, runtime_classes)?;
+    // In a late-attach process the property-init events may already have happened.
+    // Register internally-generated overrides before installing the property hooks
+    // so the No-Steam catch-up path sees the complete override set.
     if !attach_config.start_online {
         game_properties::start_offline();
     }
+    game_properties::attach_override(attach_config.game, runtime_classes, attach_config.no_steam)?;
 
     if attach_config.mem_patch {
         alloc_hooks::hook_heap_allocators(&attach_config, exe, &class_map)?;
@@ -244,10 +249,11 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
         override_mapping.clone(),
     )?;
 
-    // No-Steam late attach has two independently observed timing requirements:
+    // No-Steam late attach has two independently observed readiness points:
     // package/asset hooks must be installed early, while normal native DLLs may
-    // require a later game/graphics-ready point. Install asset hooks first and
-    // keep them active while waiting to load normal natives.
+    // require a later game/graphics-ready point. Never sleep on the lifecycle
+    // callback thread: keep asset hooks active and move native readiness waiting
+    // to a dedicated worker.
     if attach_config.no_steam {
         asset_hooks::attach_override(
             attach_config.clone(),
@@ -261,31 +267,59 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
         })?;
 
         if !attach_config.natives.is_empty() {
-            let attach_delay_ms = std::env::var("ME3_NO_STEAM_ATTACH_DELAY_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(1_000);
+            let natives = attach_config.natives.clone();
 
-            let native_ready_ms = std::env::var("ME3_NO_STEAM_NATIVE_READY_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(8_000);
+            std::thread::spawn(move || {
+                let attach_delay_ms = std::env::var("ME3_NO_STEAM_ATTACH_DELAY_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(1_000);
 
-            let wait_ms = native_ready_ms.saturating_sub(attach_delay_ms);
+                let native_ready_ms = std::env::var("ME3_NO_STEAM_NATIVE_READY_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(8_000);
 
-            info!(
-                attach_delay_ms,
-                native_ready_ms,
-                wait_ms,
-                "No-Steam: asset hooks active; waiting before loading normal native mods"
-            );
+                let wait_ms = native_ready_ms.saturating_sub(attach_delay_ms);
 
-            if wait_ms != 0 {
-                std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-            }
+                info!(
+                    attach_delay_ms,
+                    native_ready_ms,
+                    wait_ms,
+                    "No-Steam native scheduler: asset hooks active; waiting asynchronously for native readiness"
+                );
 
-            info!("No-Steam: native readiness delay elapsed; loading normal native mods");
+                if wait_ms != 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                }
+
+                info!("No-Steam native scheduler: readiness delay elapsed; loading normal native mods");
+
+                for native in natives {
+                    if let Err(e) =
+                        ModHost::get_attached().load_native(&native.path, &native.initializer)
+                    {
+                        warn!(
+                            error = &*e,
+                            path = %native.path.display(),
+                            "failed to load native mod",
+                        );
+
+                        if !native.optional {
+                            error!(
+                                path = %native.path.display(),
+                                "required No-Steam native failed; stopping normal-native scheduler"
+                            );
+                            return;
+                        }
+                    }
+                }
+
+                info!("No-Steam native scheduler: normal native loading complete");
+            });
         }
+
+        return Ok(());
     }
 
     let first_delayed_offset = attach_config
@@ -329,18 +363,16 @@ fn after_game_main<R: FnOnce() -> Result<(), eyre::Error>>(
         }
     });
 
-    if !attach_config.no_steam {
-        asset_hooks::attach_override(
-            attach_config,
-            exe,
-            class_map,
-            &step_tables,
-            override_mapping,
-        )
-        .map_err(|e| {
-            e.wrap_err("failed to attach asset override hooks; no files will be overridden")
-        })?;
-    }
+    asset_hooks::attach_override(
+        attach_config,
+        exe,
+        class_map,
+        &step_tables,
+        override_mapping,
+    )
+    .map_err(|e| {
+        e.wrap_err("failed to attach asset override hooks; no files will be overridden")
+    })?;
 
     Ok(())
 }
@@ -404,8 +436,7 @@ pub extern "system" fn DllMain(instance: usize, reason: u32, _: *mut usize) -> i
 
             let _ = INSTANCE.set(instance);
 
-            let no_steam_diag_stage =
-                std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
+            let no_steam_diag_stage = std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
 
             if no_steam_diag_stage != "load-only" && no_steam_diag_stage != "late-load-only" {
                 spawn_msg_thread();
