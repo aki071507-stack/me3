@@ -132,16 +132,25 @@ impl Game {
             return Ok(Attachment);
         }
 
-        if no_steam_diag_stage == "late-probe-only"
-            || no_steam_diag_stage == "late-load-only"
-        {
+        let delayed_stage = matches!(
+            no_steam_diag_stage.as_str(),
+            "late-probe-only"
+                | "late-load-only"
+                | "late-dll-only"
+                | "late-host-only"
+                | "late-dearxan-only"
+                | "late-filesystem-only"
+                | "late-full"
+        );
+
+        if delayed_stage {
             unsafe {
                 ResumeThread(HANDLE(thread_handle.as_raw_handle()));
             }
 
             info!(
                 stage = no_steam_diag_stage,
-                "No-Steam diagnostic: process resumed before delayed injection probe"
+                "No-Steam diagnostic: process resumed before delayed injection"
             );
 
             std::thread::sleep(std::time::Duration::from_secs(8));
@@ -161,7 +170,23 @@ impl Game {
                 "No-Steam diagnostic: delayed remote LoadLibraryW probe completed"
             );
 
-            return Ok(Attachment);
+            if no_steam_diag_stage == "late-probe-only"
+                || no_steam_diag_stage == "late-load-only"
+            {
+                return Ok(Attachment);
+            }
+
+            let response = self
+                .bridge
+                .request(attach_request)?
+                .map_err(|e| eyre!(e.0))?;
+
+            info!(
+                stage = no_steam_diag_stage,
+                "No-Steam diagnostic: delayed host attach request completed"
+            );
+
+            return Ok(response);
         }
 
         let load_result =

@@ -51,10 +51,13 @@ fn me_attach(request: AttachRequest) -> AttachResult {
         debugger::suspend_for_debugger();
     }
 
-    if request.config.no_steam
-        && std::env::var("ME3_NO_STEAM_DIAG_STAGE").as_deref() == Ok("dll-only")
-    {
-        return Ok(Attachment);
+    if request.config.no_steam {
+        let no_steam_diag_stage =
+            std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
+
+        if no_steam_diag_stage == "dll-only" || no_steam_diag_stage == "late-dll-only" {
+            return Ok(Attachment);
+        }
     }
 
     on_attach(request)
@@ -115,19 +118,23 @@ fn on_attach(request: AttachRequest) -> AttachResult {
         };
 
         match no_steam_diag_stage.as_str() {
-            "host-only" => {
+            "host-only" | "late-host-only" => {
                 info!(
-                    "No-Steam diagnostic stage=host-only: skipping dearxan, UI, filesystem, and deferred hooks"
+                    stage = no_steam_diag_stage,
+                    "No-Steam diagnostic host-only: skipping dearxan, UI, filesystem, and deferred hooks"
                 );
                 return Ok(Attachment);
             }
-            "dearxan-only" => {
-                info!("No-Steam diagnostic stage=dearxan-only");
+            "dearxan-only" | "late-dearxan-only" => {
+                info!(stage = no_steam_diag_stage, "No-Steam diagnostic dearxan-only");
                 dearxan(&attach_config)?;
                 return Ok(Attachment);
             }
-            "filesystem-only" => {
-                info!("No-Steam diagnostic stage=filesystem-only");
+            "filesystem-only" | "late-filesystem-only" => {
+                info!(
+                    stage = no_steam_diag_stage,
+                    "No-Steam diagnostic filesystem-only"
+                );
 
                 let mut override_mapping = VfsOverrideMapping::new()?;
                 override_mapping.scan_directories(attach_config.packages.iter())?;
@@ -138,7 +145,7 @@ fn on_attach(request: AttachRequest) -> AttachResult {
 
                 return Ok(Attachment);
             }
-            "" | "full" => {}
+            "" | "full" | "late-full" => {}
             other => {
                 warn!(
                     stage = other,
