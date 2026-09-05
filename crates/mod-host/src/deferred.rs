@@ -59,8 +59,19 @@ where
 
     let deferred = match until {
         Deferred::BeforeMain => {
-            static SCHEDULED_AFTER_ARXAN: Once = Once::new();
-            SCHEDULED_AFTER_ARXAN.call_once(schedule_after_arxan);
+            if ModHost::get_attached().no_steam {
+                // No-Steam production resumes the process before host injection.
+                // Therefore the original pre-main/Arxan boundary is already in the
+                // past and must not schedule Dearxan from this late-attach path.
+                if !NO_STEAM_BEFORE_MAIN_SIGNALLED.swap(true, Ordering::AcqRel) {
+                    info!(
+                        "No-Steam lifecycle: original BeforeMain/Arxan point already passed; using host-registration barrier"
+                    );
+                }
+            } else {
+                static SCHEDULED_AFTER_ARXAN: Once = Once::new();
+                SCHEDULED_AFTER_ARXAN.call_once(schedule_after_arxan);
+            }
 
             &BEFORE_MAIN
         }
@@ -192,14 +203,14 @@ fn steam_init_fn() -> Result<unsafe extern "C" fn() -> bool, eyre::Error> {
 
 #[instrument]
 fn schedule_after_arxan() {
-    let deferred = || {
-        if ModHost::get_attached().no_steam {
-            NO_STEAM_BEFORE_MAIN_SIGNALLED.store(true, Ordering::Release);
-            info!("No-Steam lifecycle: original BeforeMain/Arxan signal observed");
-            try_advance_no_steam_lifecycle();
-            return;
-        }
+    // Production No-Steam late attach must never enter Dearxan from the deferred
+    // lifecycle. Its BeforeMain barrier is handled directly in defer_init().
+    if ModHost::get_attached().no_steam {
+        warn!("No-Steam lifecycle prevented an unexpected Dearxan schedule request");
+        return;
+    }
 
+    let deferred = || {
         if let Some(deferred) = BEFORE_MAIN.lock().unwrap().take() {
             deferred.into_iter().for_each(|f| f());
         }
