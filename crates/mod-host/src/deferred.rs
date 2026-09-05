@@ -1,12 +1,15 @@
 use std::{
     mem,
-    sync::{LazyLock, Mutex, Once},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        LazyLock, Mutex, Once,
+    },
 };
 
 use eyre::{eyre, Context, ContextCompat, OptionExt};
 use pelite::pe::{Pe, Rva, Va};
 use retour::RawDetour;
-use tracing::{info, instrument, Level, Span};
+use tracing::{info, instrument, warn, Level, Span};
 use windows::{
     core::{s, w},
     Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW},
@@ -14,6 +17,7 @@ use windows::{
 
 use crate::{executable::Executable, host::ModHost};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Deferred {
     BeforeMain,
     AfterMain,
@@ -28,6 +32,10 @@ static AFTER_MAIN: Mutex<DeferredOnce> = Mutex::new(Some(Vec::new()));
 static AFTER_SYS_PROPS_INIT: Mutex<DeferredOnce> = Mutex::new(Some(Vec::new()));
 static AFTER_DBG_PROPS_INIT: Mutex<DeferredOnce> = Mutex::new(Some(Vec::new()));
 
+static NO_STEAM_ATTACH_REGISTRATION_COMPLETE: AtomicBool = AtomicBool::new(false);
+static NO_STEAM_BEFORE_MAIN_SIGNALLED: AtomicBool = AtomicBool::new(false);
+static NO_STEAM_BEFORE_MAIN_COMPLETED: AtomicBool = AtomicBool::new(false);
+
 /// Defers execution of a closure.
 ///
 /// Trying to defer a closure's execution after the point of initialization returns an error.
@@ -40,7 +48,7 @@ where
         std::env::var("ME3_NO_STEAM_DIAG_STAGE").unwrap_or_default();
 
     if ModHost::get_attached().no_steam
-        && (no_steam_diag_stage.is_empty() || no_steam_diag_stage == "late-full-immediate")
+        && no_steam_diag_stage == "late-full-immediate"
     {
         info!(
             "No-Steam late attach: startup defer point already passed; executing immediately"
@@ -94,7 +102,53 @@ where
         .unwrap()
         .as_mut()
         .map(|deferred| deferred.push(Box::new(move || span.in_scope(f))))
-        .ok_or_eyre("tried to defer function after init")
+        .ok_or_eyre("tried to defer function after init")?;
+
+    if ModHost::get_attached().no_steam
+        && matches!(until, Deferred::BeforeMain | Deferred::AfterMain)
+    {
+        try_advance_no_steam_lifecycle();
+    }
+
+    Ok(())
+}
+
+pub fn mark_no_steam_attach_registration_complete() {
+    NO_STEAM_ATTACH_REGISTRATION_COMPLETE.store(true, Ordering::Release);
+    info!("No-Steam lifecycle: host deferred registration complete");
+    try_advance_no_steam_lifecycle();
+}
+
+fn try_advance_no_steam_lifecycle() {
+    if !ModHost::get_attached().no_steam
+        || !NO_STEAM_ATTACH_REGISTRATION_COMPLETE.load(Ordering::Acquire)
+        || !NO_STEAM_BEFORE_MAIN_SIGNALLED.load(Ordering::Acquire)
+    {
+        return;
+    }
+
+    static DRAINED_NO_STEAM_BEFORE_MAIN: Once = Once::new();
+    DRAINED_NO_STEAM_BEFORE_MAIN.call_once(|| {
+        if let Some(deferred) = BEFORE_MAIN.lock().unwrap().take() {
+            deferred.into_iter().for_each(|f| f());
+        }
+
+        NO_STEAM_BEFORE_MAIN_COMPLETED.store(true, Ordering::Release);
+        info!("No-Steam lifecycle: original BeforeMain queue completed");
+    });
+
+    if NO_STEAM_BEFORE_MAIN_COMPLETED.load(Ordering::Acquire) {
+        static ADVANCED_NO_STEAM_AFTER_MAIN: Once = Once::new();
+        ADVANCED_NO_STEAM_AFTER_MAIN.call_once(|| {
+            info!(
+                "No-Steam lifecycle: advancing original AfterMain queue without SteamAPI_Init"
+            );
+
+            if !advance_after_main() {
+                warn!("No-Steam lifecycle: AfterMain queue was already advanced");
+            }
+        });
+    }
 }
 
 pub fn advance_after_main() -> bool {
@@ -139,6 +193,13 @@ fn steam_init_fn() -> Result<unsafe extern "C" fn() -> bool, eyre::Error> {
 #[instrument]
 fn schedule_after_arxan() {
     let deferred = || {
+        if ModHost::get_attached().no_steam {
+            NO_STEAM_BEFORE_MAIN_SIGNALLED.store(true, Ordering::Release);
+            info!("No-Steam lifecycle: original BeforeMain/Arxan signal observed");
+            try_advance_no_steam_lifecycle();
+            return;
+        }
+
         if let Some(deferred) = BEFORE_MAIN.lock().unwrap().take() {
             deferred.into_iter().for_each(|f| f());
         }

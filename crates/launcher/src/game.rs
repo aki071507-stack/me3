@@ -167,7 +167,7 @@ impl Game {
             let delay_ms = std::env::var("ME3_NO_STEAM_ATTACH_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(8_000);
+                .unwrap_or(1_000);
 
             info!(
                 stage = stage_name,
